@@ -1,0 +1,12 @@
+#version 450 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, rgba32f) uniform image2D img_output;
+
+void main() {
+	ivec2 ppos = ivec2(gl_GlobalInvocationID.xy);
+	//imageStore(img_output, pixel_coords, vec4(pixel_coords.x / 8.0, pixel_coords.y / 8.0, 0.0, 1.0));
+
+	float ival = clamp(1.0 - min(mod(floor(ppos.x), 7.0), mod(floor(ppos.y), 7.0)), 0.0, 1.0);
+	imageStore(img_output, ppos, vec4(ival, 0.0, 0.0, 1.0));
+}

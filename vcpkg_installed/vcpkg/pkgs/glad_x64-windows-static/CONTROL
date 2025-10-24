@@ -1,0 +1,14 @@
+Package: glad
+Version: 0.1.36
+Depends: egl-registry, opengl-registry, vcpkg-cmake:x64-windows, vcpkg-cmake-config:x64-windows
+Architecture: x64-windows-static
+Multi-Arch: same
+Abi: 47a7caf384361ffe135e08b9aa4a822cbc2b9b1f9cd9189a344dcbf41f291694
+Description: Multi-Language Vulkan/GL/GLES/EGL/GLX/WGL Loader-Generator based on the official specs.
+Default-Features: loader
+
+Package: glad
+Feature: loader
+Architecture: x64-windows-static
+Multi-Arch: same
+Description: Generate loader logic.
