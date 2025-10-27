@@ -1,12 +1,17 @@
 #version 450 core
 layout(local_size_x = 8, local_size_y = 8) in;
-
-layout(binding = 0, rgba32f) uniform image2D img_output;
+layout(std430, binding = 0) buffer Grid
+{
+    float values[32][32];  // height x width
+};
 
 void main() {
-	ivec2 ppos = ivec2(gl_GlobalInvocationID.xy);
-	//imageStore(img_output, pixel_coords, vec4(pixel_coords.x / 8.0, pixel_coords.y / 8.0, 0.0, 1.0));
+	ivec2 ppos = ivec2(mod(gl_GlobalInvocationID.xy, 32));
 
-	float ival = clamp(1.0 - min(mod(floor(ppos.x), 7.0), mod(floor(ppos.y), 7.0)), 0.0, 1.0);
-	imageStore(img_output, ppos, vec4(ival, 0.0, 0.0, 1.0));
+	values[ppos.y][ppos.x] = float(min(mod(floor(ppos.x), 31.0), mod(floor(ppos.y), 31.0)) == 0.0);
+
+	if(ppos.x == 14 && ppos.y > 2)
+	{
+		values[ppos.y][ppos.x] = 1.0;
+	}
 }

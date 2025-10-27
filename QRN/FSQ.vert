@@ -1,6 +1,6 @@
 #version 450 core
 out vec2 uv;
-uniform float aspectratio;
+uniform float aspectratio = 0.75;
 
 void main()
 {

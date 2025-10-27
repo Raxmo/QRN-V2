@@ -14,20 +14,39 @@
 #include <GLFW/glfw3.h>
 
 #include "resource.h"
+#include <algorithm>
 
+/*=============================================================================+/
+								 Global Variables
+/+=============================================================================*/
 
-
-GLuint texture;
+GLuint tilemaploc;
 
 GLuint playerposloc;
 GLuint playerrotloc;
 GLuint aspectratioloc;
 
-std::array<double, 2> playerposraw = { 0.0, 0.0 };
-std::array<double, 2> playerrotraw = { 1.0, 0.0 };
+std::array<double, 2> playerposraw = { 4.5, 4.5 };
+std::array<double, 2> playerrotraw = { 1.0, 0.0 }; // rotor representing no rotation
 float aspectratio = 1.0f;
 
-std::array<float, 2> lastMousePos = { 400.0f, 300.0f };
+std::array<double, 2> lastMousePos = { 400.0f, 300.0f };
+
+double BaseSensitivity = 2.0;
+double mouseSensitivity = 0.002;
+double fps = 20.0;
+double deltaTime = 0.05; // <-- independant of framerate.
+
+std::array<double, 2> movementInput = { 0.0, 0.0 }; // x is strafe, y is forward
+double movementSpeed = 4.0; // units per second
+
+std::array<float, 32*32> mapdata;
+
+double playerRadius = 0.95;
+
+/*=============================================================================+/
+	                            Utility Functions
+/+=============================================================================*/
 
 // Rotor multiplication for 2D rotors
 std::array<double, 2> RotMult(const std::array<double, 2>& a, const std::array<double, 2>& b)
@@ -45,11 +64,118 @@ std::array<double, 2> Normalize(const std::array<double, 2>& v)
     return { v[0] / len, v[1] / len };
 };
 
+std::array<double, 2> NormalizeByMag(const std::array<double, 2>& v, double mag)
+{
+    double len = std::sqrt(v[0] * v[0] + v[1] * v[1]);
+    if (len == 0.0) return { 0.0, 0.0 };
+    return { v[0] / len * mag, v[1] / len * mag };
+};
+
+double Magnatude(const std::array<double, 2>& v)
+{
+    return std::sqrt(v[0] * v[0] + v[1] * v[1]);
+};
+
 std::array<double, 2> getForward() // forward is (0, 1) rotated by playerrotraw
 {
 	return { 2.0 * playerrotraw[0] * playerrotraw[1], playerrotraw[0] * playerrotraw[0] - playerrotraw[1] * playerrotraw[1] };
 }
 
+/*=============================================================================+/
+                                  Callbacks
+/+=============================================================================*/
+
+bool firstMouse = true;
+void cursor_position_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    if (firstMouse)
+    {
+        lastMousePos = { xpos, ypos };
+        firstMouse = false;
+	}
+	double xoffset = (xpos) - lastMousePos[0]; // <-- horizontal mouse movement
+    double yoffset = (ypos) - lastMousePos[1]; // <-- while not used, will likely be needed in future
+    lastMousePos = { (xpos), (ypos) };
+
+    // create delta rotor from mouse movement
+    std::array<double, 2> rotChange = { 1.0, xoffset * mouseSensitivity };
+    playerrotraw = RotMult(rotChange, playerrotraw); // <-- rotor multiplication
+	playerrotraw = Normalize(playerrotraw); // <-- normalize to prevent floating point 
+}
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+{
+    glViewport(0, 0, width, height);
+    aspectratio = (float)height / (float)width;
+    mouseSensitivity = BaseSensitivity / (double)max(height, width);
+}
+
+// here is the unordered map of key codes to lamdas
+std::unordered_map<int, std::function<void()>> onPressFunctions = 
+{
+    {GLFW_KEY_ESCAPE, []()
+    {
+        // close window
+        glfwSetWindowShouldClose(glfwGetCurrentContext(), true);
+	}},
+    {GLFW_KEY_W, []()
+    {
+		movementInput[1] += 1.0;
+    }},
+    {GLFW_KEY_S, []()
+    {
+		movementInput[1] -= 1.0;
+    }},
+    {GLFW_KEY_A, []()
+	{
+        movementInput[0] -= 1.0;
+    }},
+    {GLFW_KEY_D, []()
+    {
+        movementInput[0] += 1.0;
+    }}
+};
+std::unordered_map<int, std::function<void()>> onReleaseFunctions = 
+{
+    {GLFW_KEY_W, []()
+	{
+        movementInput[1] -= 1.0;
+    }},
+    {GLFW_KEY_S, []()
+    {
+        movementInput[1] += 1.0;
+    }},
+    {GLFW_KEY_A, []()
+    {
+        movementInput[0] += 1.0;
+    }},
+    {GLFW_KEY_D, []()
+    {
+        movementInput[0] -= 1.0;
+    }}
+};
+
+// Here is the Key Callback
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    switch (action)
+    {
+    case GLFW_PRESS:
+        if(onPressFunctions.contains(key))onPressFunctions[key]();
+        break;
+    case GLFW_RELEASE:
+        if(onReleaseFunctions.contains(key))onReleaseFunctions[key]();
+        break;
+    default:
+        return;
+    }
+}
+
+/*==============================================================================+/
+								  Window Stuffs
+/+==============================================================================*/
+
+GLuint VAO;
 struct Window
 {
     struct Info
@@ -65,6 +191,7 @@ struct Window
 	}info;
 
     GLFWwindow* context = nullptr;
+    double lastTime = 0.0f;
 
 	Window(Window::Info i) : info(i)
     {
@@ -91,14 +218,35 @@ struct Window
 			throw std::runtime_error("GLAD Initialization Failed");
         }
 
+
+        // debugging error handling
+        glEnable(GL_DEBUG_OUTPUT);
+        glDebugMessageCallback([](GLenum source, GLenum type, GLuint id, GLenum severity,
+            GLsizei length, const GLchar* message, const void* userParam) {
+                std::cerr << "GL Debug: " << message << std::endl;
+            }, nullptr);
+
         // create and bind VAO
-		unsigned int VAO;
 		glGenVertexArrays(1, &VAO);
 		glBindVertexArray(VAO);
+
+
 
 		// Set ancillary setting from info
 		info.self = this;
         glClearColor(info.clearColor[0], info.clearColor[1], info.clearColor[2], info.clearColor[3]);
+
+		// Set input callbacks
+		glfwSetCursorPosCallback(context, cursor_position_callback);
+		glfwSetFramebufferSizeCallback(context, framebuffer_size_callback);
+        glfwSetKeyCallback(context, key_callback);
+		// maximize window AFTER setting framebuffer size callback
+		glfwMaximizeWindow(context);
+
+        // hide and capture cursor
+        glfwSetInputMode(context, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+		lastTime = glfwGetTime();
     }
 
     ~Window()
@@ -109,24 +257,32 @@ struct Window
 
     void operator () ()
     {
+        double frametime = 0.0;
         // Update loop
         while (!glfwWindowShouldClose(context)) {
             if (glfwGetKey(context, GLFW_KEY_ESCAPE) == GLFW_PRESS)
                 glfwSetWindowShouldClose(context, true);
+
             glfwPollEvents();
+			double currentTime = glfwGetTime();
+			deltaTime = currentTime - lastTime;
 
-			int width, height;
-            glfwGetFramebufferSize(context, &width, &height);
-            glViewport(0, 0, width, height);
-			aspectratio = (float)height / (float)width;
-
-
-            //glClear(GL_COLOR_BUFFER_BIT);
             if(info.onUpdate) info.onUpdate();
-            glfwSwapBuffers(context);
+
+			lastTime = currentTime;
+			frametime += deltaTime;
+            if(frametime < (1.0 / fps)) continue;
+			if(info.onRender) info.onRender();
+			glfwSwapBuffers(context);
+            glFinish();
+			frametime -= 1.0 / fps;
         }
     }
 };
+
+/*=============================================================================+/
+							Shader and Shader Program
+/+=============================================================================*/
 
 std::string TextFromResource(int resourceID)
 {
@@ -139,7 +295,6 @@ std::string TextFromResource(int resourceID)
     if (!pData) throw std::runtime_error("Failed to Lock Resource");
 	return std::string(pData, dataSize);
 };
-
 
 struct Shader
 {
@@ -175,7 +330,7 @@ struct ShaderProgram
 		std::unordered_map<std::string, int> items;
 	    std::function<void()> onBuild;
         std::function<void()> onDestroy;
-		std::function<void()> onUpdate;
+		std::function<void()> onUpdate; // <-- subscribe to update event?
         std::function<void()> onInvoke;
 
     }info;
@@ -215,6 +370,10 @@ struct ShaderProgram
     }
 };
 
+/*=============================================================================+/
+							  Shader deffinitions
+/+=============================================================================*/
+
 Shader vertex(GL_VERTEX_SHADER, IDR_RCDATA1);
 Shader fragment(GL_FRAGMENT_SHADER, IDR_RCDATA2);
 ShaderProgram shaderProgram({
@@ -223,53 +382,106 @@ ShaderProgram shaderProgram({
     {
         playerposloc = glGetUniformLocation(shaderProgram.SELF, "playerpos");
         playerrotloc = glGetUniformLocation(shaderProgram.SELF, "playerrot");
-		aspectratioloc = glGetUniformLocation(shaderProgram.SELF, "aspectratio");
-	},
+        aspectratioloc = glGetUniformLocation(shaderProgram.SELF, "aspectratio");
+    },
     .onInvoke = []()
     {
 		glUniform2f(playerposloc, (float)playerposraw[0], (float)playerposraw[1]);
 		glUniform2f(playerrotloc, (float)playerrotraw[0], (float)playerrotraw[1]);
 		glUniform1f(aspectratioloc, aspectratio);
+        glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     });
 
-Shader computeShader(GL_COMPUTE_SHADER, IDR_RCDATA3);
-ShaderProgram computeProgram({
-    .Shaders = { computeShader },
-    .onInvoke = []()
+Shader mapGenShader(GL_COMPUTE_SHADER, IDR_RCDATA3);
+ShaderProgram mapGenProgram({
+    .Shaders = { mapGenShader },
+    .onBuild = []()
     {
-        glDispatchCompute(1, 1, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        glGenBuffers(1, &tilemaploc);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, tilemaploc);
+        
+        // Allocate GPU memory, but don’t upload any data
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 1024 * sizeof(float), nullptr, GL_DYNAMIC_COPY);
+        
+        // Bind to binding point 0
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, tilemaploc);
+        glUseProgram(mapGenProgram.SELF);
+        glDispatchCompute(4, 4, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); 
+        float* gpuData = (float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+        if (!gpuData) {
+            throw std::runtime_error("Failed to map SSBO!");
+        }
+        std::memcpy(mapdata.data(), gpuData, 32 * 32 * sizeof(float));
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }
 	});
+
+/*=============================================================================+/
+								  Main Function
+/+=============================================================================*/
 
 int main()
 {
     try
     {
         Window::Info info;
-		info.title = "My OpenGL Window";
-        Window window(info);
-
-
-
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 8, 8);
-        glBindImageTexture(0, texture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-
-        std::cout << "Renderer" << std::endl;
-        shaderProgram.Build();
-		std::cout << "Compute Shader" << std::endl;
-		computeProgram.Build();
-
-
-        window.info.onUpdate = []()
+		info.title = "QRN";
+        info.onUpdate = []()
         {
-			computeProgram();
-            shaderProgram();
+			std::array<double, 2> forward = getForward();
+			std::array<double, 2> right = { forward[1], -forward[0] }; // perpendicular to forward
+
+            std::array<double, 2> movement = {
+                movementInput[0] * right[0] + movementInput[1] * forward[0],
+                movementInput[0] * right[1] + movementInput[1] * forward[1]
+			};
+
+			movement = Normalize(movement);
+
+			playerposraw[0] += movement[0] * deltaTime * movementSpeed;
+			playerposraw[1] += movement[1] * deltaTime * movementSpeed;
+
+            for (int y = playerposraw[1] - playerRadius; y < playerposraw[1] + playerRadius; y++)
+            {
+                for (int x = playerposraw[0] - playerRadius; x < playerposraw[0] + playerRadius; x++)
+                {
+					float tileValue = mapdata[ y * 32 + (x)];
+					if (tileValue < 0.5f) continue; // not a wall, go next
+
+                    std::array<double, 2> closestPoint =
+                    {
+                        std::clamp(playerposraw[0], (double)(x), (double)(x + 1)),
+                        std::clamp(playerposraw[1], (double)(y), (double)(y + 1))
+					};
+
+                    std::array<double, 2> difference =
+                    {
+                        playerposraw[0] - closestPoint[0],
+                        playerposraw[1] - closestPoint[1]
+                    };
+					double distance = Magnatude(difference);
+                    if (distance >= playerRadius) continue; // no colision
+
+					std::array<double, 2> correctionDir = NormalizeByMag(difference, playerRadius);
+					playerposraw[0] = correctionDir[0] + closestPoint[0];
+					playerposraw[1] = correctionDir[1] + closestPoint[1];
+                }
+			}
+			
         };
+        info.onRender = []()
+        {
+            glClear(GL_COLOR_BUFFER_BIT);
+            shaderProgram();
+		};
+		Window window(info); // <-- sets up OpenGL context
+
+		mapGenProgram.Build();
+
+        shaderProgram.Build();
 
         window();
     }
