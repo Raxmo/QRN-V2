@@ -15,6 +15,20 @@
 
 #include "resource.h"
 #include <algorithm>
+/*=============================================================================+/
+									TODO List
+/+=============================================================================*/
+/*
+	[ ] level generation
+    [ ] render in static
+        [X] full hit info
+		[X] hash function for random generation
+			[X] 1D hash
+			[X] 2D hash
+			[X] 3D hash
+            [X] 4D hash
+            
+*/
 
 /*=============================================================================+/
 								 Global Variables
@@ -25,6 +39,7 @@ GLuint tilemaploc;
 GLuint playerposloc;
 GLuint playerrotloc;
 GLuint aspectratioloc;
+GLuint framecountloc;
 
 std::array<double, 2> playerposraw = { 4.5, 4.5 };
 std::array<double, 2> playerrotraw = { 1.0, 0.0 }; // rotor representing no rotation
@@ -34,15 +49,17 @@ std::array<double, 2> lastMousePos = { 400.0f, 300.0f };
 
 double BaseSensitivity = 2.0;
 double mouseSensitivity = 0.002;
-double fps = 20.0;
+double fps = 60.0;
 double deltaTime = 0.05; // <-- independant of framerate.
 
 std::array<double, 2> movementInput = { 0.0, 0.0 }; // x is strafe, y is forward
 double movementSpeed = 4.0; // units per second
 
-std::array<float, 32*32> mapdata;
+std::array<float, 512*512> mapdata;
 
 double playerRadius = 0.95;
+
+unsigned int frameCount;
 
 /*=============================================================================+/
 	                            Utility Functions
@@ -218,7 +235,6 @@ struct Window
 			throw std::runtime_error("GLAD Initialization Failed");
         }
 
-
         // debugging error handling
         glEnable(GL_DEBUG_OUTPUT);
         glDebugMessageCallback([](GLenum source, GLenum type, GLuint id, GLenum severity,
@@ -229,8 +245,6 @@ struct Window
         // create and bind VAO
 		glGenVertexArrays(1, &VAO);
 		glBindVertexArray(VAO);
-
-
 
 		// Set ancillary setting from info
 		info.self = this;
@@ -374,6 +388,7 @@ struct ShaderProgram
 							  Shader deffinitions
 /+=============================================================================*/
 
+// Main rendering shader
 Shader vertex(GL_VERTEX_SHADER, IDR_RCDATA1);
 Shader fragment(GL_FRAGMENT_SHADER, IDR_RCDATA2);
 ShaderProgram shaderProgram({
@@ -383,17 +398,23 @@ ShaderProgram shaderProgram({
         playerposloc = glGetUniformLocation(shaderProgram.SELF, "playerpos");
         playerrotloc = glGetUniformLocation(shaderProgram.SELF, "playerrot");
         aspectratioloc = glGetUniformLocation(shaderProgram.SELF, "aspectratio");
+        framecountloc = glGetUniformLocation(shaderProgram.SELF, "frameCount");
+        frameCount = (unsigned int)(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()
+        ).count()) & (GLuint)(-1);
     },
     .onInvoke = []()
     {
 		glUniform2f(playerposloc, (float)playerposraw[0], (float)playerposraw[1]);
 		glUniform2f(playerrotloc, (float)playerrotraw[0], (float)playerrotraw[1]);
 		glUniform1f(aspectratioloc, aspectratio);
+        glUniform1ui(framecountloc, frameCount++);
         glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     });
 
+// Map generation compute shader
 Shader mapGenShader(GL_COMPUTE_SHADER, IDR_RCDATA3);
 ShaderProgram mapGenProgram({
     .Shaders = { mapGenShader },
@@ -403,18 +424,18 @@ ShaderProgram mapGenProgram({
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, tilemaploc);
         
         // Allocate GPU memory, but don’t upload any data
-        glBufferData(GL_SHADER_STORAGE_BUFFER, 1024 * sizeof(float), nullptr, GL_DYNAMIC_COPY);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 512 * 512 * sizeof(float), nullptr, GL_DYNAMIC_COPY);
         
         // Bind to binding point 0
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, tilemaploc);
         glUseProgram(mapGenProgram.SELF);
-        glDispatchCompute(4, 4, 1);
+        glDispatchCompute(512/8, 512/8, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT); 
         float* gpuData = (float*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
         if (!gpuData) {
             throw std::runtime_error("Failed to map SSBO!");
         }
-        std::memcpy(mapdata.data(), gpuData, 32 * 32 * sizeof(float));
+        std::memcpy(mapdata.data(), gpuData, 512 * 512 * sizeof(float));
         glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
     }
 	});
@@ -448,7 +469,7 @@ int main()
             {
                 for (int x = playerposraw[0] - playerRadius; x < playerposraw[0] + playerRadius; x++)
                 {
-					float tileValue = mapdata[ y * 32 + (x)];
+					float tileValue = mapdata[ y * 512 + (x)];
 					if (tileValue < 0.5f) continue; // not a wall, go next
 
                     std::array<double, 2> closestPoint =
